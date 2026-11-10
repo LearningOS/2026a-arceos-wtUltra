@@ -55,7 +55,19 @@ extern crate alloc;
 
 #[cfg(feature = "alloc")]
 #[doc(no_inline)]
-pub use alloc::{boxed, collections, format, string, vec};
+pub use alloc::{boxed, format, string, vec};
+
+/// The `alloc` collections, with a `HashMap` type added.
+/// The `alloc` crate does not provide a hash map, so `HashMap` is provided
+/// here as a map with the same interface (backed by a `BTreeMap`), which
+/// lets kernel apps use `std::collections::HashMap`.
+#[cfg(feature = "alloc")]
+pub mod collections {
+    pub use alloc::collections::*;
+
+    /// A key-value map (backed by a `BTreeMap`).
+    pub type HashMap<K, V> = alloc::collections::BTreeMap<K, V>;
+}
 
 #[doc(no_inline)]
 pub use core::{arch, cell, cmp, hint, marker, mem, ops, ptr, slice, str};
