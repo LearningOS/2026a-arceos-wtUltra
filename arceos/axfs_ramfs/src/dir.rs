@@ -67,6 +67,23 @@ impl DirNode {
         children.remove(name);
         Ok(())
     }
+
+    /// Renames a node within this directory.
+    pub fn rename_node(&self, src_name: &str, dst_name: &str) -> VfsResult {
+        if src_name.is_empty()
+            || src_name == "."
+            || src_name == ".."
+            || dst_name.is_empty()
+            || dst_name == "."
+            || dst_name == ".."
+        {
+            return Err(VfsError::InvalidInput);
+        }
+        let mut children = self.children.write();
+        let node = children.remove(src_name).ok_or(VfsError::NotFound)?;
+        children.insert(dst_name.into(), node);
+        Ok(())
+    }
 }
 
 impl VfsNodeOps for DirNode {
@@ -162,6 +179,34 @@ impl VfsNodeOps for DirNode {
             Err(VfsError::InvalidInput) // remove '.' or '..
         } else {
             self.remove_node(name)
+        }
+    }
+
+    fn rename(&self, src_path: &str, dst_path: &str) -> VfsResult {
+        log::error!("RAMFS RENAME {} -> {}", src_path, dst_path);
+        let (src_name, src_rest) = split_path(src_path);
+        let (dst_name, dst_rest) = split_path(dst_path);
+        match (src_rest, dst_rest) {
+            (Some(src_rest), Some(dst_rest)) => {
+                if src_name == dst_name {
+                    self.rename(src_rest, dst_rest)
+                } else {
+                    match src_name {
+                        "" | "." => self.rename(src_rest, dst_rest),
+                        ".." => self.parent().ok_or(VfsError::NotFound)?.rename(src_rest, dst_rest),
+                        _ => {
+                            let subdir = self.children.read().get(src_name).ok_or(VfsError::NotFound)?.clone();
+                            subdir.rename(src_rest, dst_rest)
+                        }
+                    }
+                }
+            }
+            (Some(_), None) => Err(VfsError::InvalidInput),
+            (None, Some(dst_rest)) => {
+                let dst_name = dst_rest.rsplit(char::from(47)).next().unwrap_or(dst_rest);
+                self.rename_node(src_name, dst_name)
+            }
+            (None, None) => self.rename_node(src_name, dst_name),
         }
     }
 

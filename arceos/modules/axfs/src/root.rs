@@ -133,13 +133,58 @@ impl VfsNodeOps for RootDirectory {
     }
 
     fn rename(&self, src_path: &str, dst_path: &str) -> VfsResult {
-        self.lookup_mounted_fs(src_path, |fs, rest_path| {
+        let result = self.lookup_mounted_fs(src_path, |fs, rest_path| {
             if rest_path.is_empty() {
                 ax_err!(PermissionDenied) // cannot rename mount points
             } else {
                 fs.root_dir().rename(rest_path, dst_path)
             }
-        })
+        });
+        match result {
+            Ok(()) => Ok(()),
+            Err(AxError::Unsupported) => {
+                rename_file_by_copy(src_path, dst_path)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+fn rename_file_by_copy(src_path: &str, dst_path: &str) -> VfsResult {
+    let (src_parent, src_name) = split_parent_name(src_path);
+    let (dst_parent, dst_name) = split_parent_name(dst_path);
+    if src_parent != dst_parent {
+        return Err(AxError::InvalidInput);
+    }
+    let dir = lookup(None, src_parent)?;
+    let src = dir.clone().lookup(src_name)?;
+    let mut buf = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        let mut chunk = [0u8; 512];
+        let n = src.read_at(offset, &mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        offset += n as u64;
+    }
+    dir.create(dst_name, VfsNodeType::File)?;
+    let dst = dir.clone().lookup(dst_name)?;
+    let mut written = 0usize;
+    while written < buf.len() {
+        written += dst.write_at(written as u64, &buf[written..])?;
+    }
+    dir.remove(src_name)?;
+    Ok(())
+}
+
+fn split_parent_name(path: &str) -> (&str, &str) {
+    let path = path.trim_end_matches(char::from(47));
+    match path.rfind(char::from(47)) {
+        Some(0) => ("/", &path[1..]),
+        Some(idx) => (&path[..idx], &path[idx + 1..]),
+        None => (".", path),
     }
 }
 
