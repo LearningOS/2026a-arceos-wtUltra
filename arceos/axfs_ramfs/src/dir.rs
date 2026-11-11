@@ -183,7 +183,6 @@ impl VfsNodeOps for DirNode {
     }
 
     fn rename(&self, src_path: &str, dst_path: &str) -> VfsResult {
-        log::error!("RAMFS RENAME {} -> {}", src_path, dst_path);
         let (src_name, src_rest) = split_path(src_path);
         let (dst_name, dst_rest) = split_path(dst_path);
         match (src_rest, dst_rest) {
