@@ -6,8 +6,8 @@ use core::panic::PanicInfo;
 #[no_mangle]
 unsafe extern "C" fn _start() -> ! {
     core::arch::asm!(
-        "li a0, 0x6688",
-        "li a1, 0x1234",
+        "csrr a1, mhartid",
+        "ld a0, 64(zero)",
         "li a7, 8",
         "ecall",
         options(noreturn)

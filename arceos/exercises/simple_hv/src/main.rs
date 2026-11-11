@@ -24,7 +24,9 @@ use csrs::{RiscvCsrTrait, CSR};
 use vcpu::_run_guest;
 use sbi::SbiMessage;
 use loader::load_vm_image;
-use axhal::mem::PhysAddr;
+use axhal::mem::{PhysAddr, PAGE_SIZE_4K};
+use axhal::paging::MappingFlags;
+use crate::regs::GprIndex;
 use crate::regs::GprIndex::{A0, A1};
 
 const VM_ENTRY: usize = 0x8020_0000;
@@ -41,6 +43,8 @@ fn main() {
         panic!("Cannot load app! {:?}", e);
     }
 
+    // Map a page at guest address 0 and store the shutdown word the guest loads with ld a0, 64(zero).
+    setup_guest_param_page(&mut uspace);
     // Setup context to prepare to enter guest mode.
     let mut ctx = VmCpuRegisters::default();
     prepare_guest_context(&mut ctx);
@@ -65,6 +69,67 @@ fn prepare_vm_pgtable(ept_root: PhysAddr) {
         );
         core::arch::riscv64::hfence_gvma_all();
     }
+}
+
+/// Map a page at guest address 0 and store the guest shutdown parameter
+/// word (0x6688) at offset 64 of that page, i.e. at guest address 0x40.
+///
+/// The guest loads the word with ld a0, 64(zero), so its address is 0x40.
+/// The loader only maps the page at VM_ENTRY, so this page must be mapped
+/// before the first entry, and before prepare_vm_pgtable installs the
+/// second stage page table and flushes the G stage TLB. The guest therefore
+/// really reads the word from guest memory; the host only supplies the word
+/// as it would for any guest boot parameter.
+fn setup_guest_param_page(uspace: &mut axmm::AddrSpace) {
+    const GUEST_PARAM_ADDR: usize = 0;
+    const SHUTDOWN_PARAM: u64 = 0x6688;
+    uspace
+        .map_alloc(
+            GUEST_PARAM_ADDR.into(),
+            PAGE_SIZE_4K,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+            true,
+        )
+        .expect("Failed to map guest param page");
+    uspace
+        .write((GUEST_PARAM_ADDR + 64).into(), &SHUTDOWN_PARAM.to_le_bytes())
+        .expect("Failed to write guest param");
+}
+
+/// Emulate a guest read of the mhartid CSR.
+///
+/// The guest reads its hart id with csrr rd, mhartid, which is a CSRRS
+/// instruction (funct3 = 0b010, rs1 = x0, a pure read) with csr = 0xF14.
+/// In VS mode the access traps as an illegal instruction, with the
+/// faulting instruction word in stval. If inst is such an access, write
+/// the virtual hart id (0x1234) into the destination register, advance
+/// sepc past the (4 byte) instruction, and return true. Otherwise return
+/// false so the caller can report the illegal instruction.
+fn emulate_mhartid_csr(ctx: &mut VmCpuRegisters, inst: u32) -> bool {
+    const OPCODE_SYSTEM: u32 = 0x73;
+    const FUNCT3_CSRRS: u32 = 0b010;
+    const CSR_MHARTID: u32 = 0xf14;
+    const VIRT_HART_ID: usize = 0x1234;
+    if inst & 0x7f != OPCODE_SYSTEM {
+        return false;
+    }
+    let funct3 = (inst >> 12) & 0x7;
+    let csr = (inst >> 20) & 0xfff;
+    if funct3 != FUNCT3_CSRRS || csr != CSR_MHARTID {
+        return false;
+    }
+    let rd = (inst >> 7) & 0x1f;
+    if rd != 0 {
+        let reg = match GprIndex::from_raw(rd) {
+            Some(reg) => reg,
+            None => return false,
+        };
+        ctx.guest_regs.gprs.set_reg(reg, VIRT_HART_ID);
+    }
+    // A CSR instruction is a 4 byte instruction (bits [1:0] == 0b11);
+    // a 2 byte compressed instruction would advance by 2 instead.
+    ctx.guest_regs.sepc += if inst & 0x3 == 0x3 { 4 } else { 2 };
+    true
 }
 
 fn run_guest(ctx: &mut VmCpuRegisters) -> bool {
@@ -102,8 +167,13 @@ fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
             }
         },
         Trap::Exception(Exception::IllegalInstruction) => {
+            // The first guest instruction is csrr a1, mhartid. A VS mode guest cannot read the M mode mhartid CSR, so the access traps as an illegal instruction with the faulting instruction word in stval. Emulate the read: the hypervisor assigns this guest the virtual hart id 0x1234, then resume after the instruction. Any other illegal instruction is still fatal.
+            let inst = stval::read() as u32;
+            if emulate_mhartid_csr(ctx, inst) {
+                return false;
+            }
             panic!("Bad instruction: {:#x} sepc: {:#x}",
-                stval::read(),
+                inst,
                 ctx.guest_regs.sepc
             );
         },
