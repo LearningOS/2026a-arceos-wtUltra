@@ -2,7 +2,7 @@
   "schema": 1,
   "courseId": 2078,
   "repository": "LearningOS/2026a-arceos-wtUltra",
-  "commit": "b556f1d5c3f6d9b5f0e5153ba7d37a2514fc2224",
+  "commit": "f23a281a20944e24c529d13b95c9ae042126be6a",
   "score": 600,
   "totalScore": 600,
   "exercises": [
@@ -50,9 +50,9 @@
     }
   ],
   "student": "wtUltra",
-  "runId": "42933198624",
+  "runId": "42942516020",
   "runAttempt": "1",
   "upload": {
-    "status": "accepted"
+    "status": "pending"
   }
 }
